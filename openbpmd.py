@@ -18,10 +18,8 @@ descriptn = \
     """
 
 # OpenMM
-from simtk.openmm import *
-from simtk.openmm.app import *
-from simtk.unit import *
-from simtk.openmm.app.metadynamics import *
+from openmm.app import *
+from openmm import *
 
 # The rest
 import argparse
@@ -37,113 +35,6 @@ import os
 __author__ = "Dominykas Lukauskis"
 __version__ = "1.0.0"
 __email__ = "dominykas.lukauskis.19@ucl.ac.uk"
-
-
-def main(args):
-    """Main entry point of the app. Takes in argparse.Namespace object as
-    a function argument. Carries out a sequence of steps required to obtain a
-    stability score for a given ligand pose in the provided structure file.
-
-    1. Load the structure and parameter files.
-    2. If absent, create an output folder.
-    3. Minimization up to ener. tolerance of 10 kJ/mol.
-    4. 500 ps equilibration in NVT ensemble with position
-       restraints on solute heavy atoms with the force 
-       constant of 5 kcal/mol/A^2
-    5. Run NREPs (default=10) of binding pose metadynamics simulations,
-       writing trajectory files and a time-resolved BPM scores for each
-       repeat.
-    6. Collect results from the OpenBPMD simulations and
-       write a final score for a given protein-ligand
-       structure.
-
-    Parameters
-    ----------
-    args.structure : str, default='solvated.rst7'
-        Name of the structure file, either Amber or Gromacs format.
-    args.parameters : str, default='solvated.prm7'
-        Name of the parameter or topology file, either Amber or Gromacs
-        format.
-    args.output : str, default='.'
-        Path to and the name of the output directory.
-    args.lig_resname : str, default='LIG'
-        Residue name of the ligand in the structure/parameter file.
-    args.nreps : int, default=10
-        Number of repeat OpenBPMD simulations to run in series.
-    args.hill_height : float, default=0.3
-        Size of the metadynamical hill, in kcal/mol.
-    """
-    if args.structure.endswith('.gro'):
-        coords = GromacsGroFile(args.structure)
-        box_vectors = coords.getPeriodicBoxVectors()
-        parm = GromacsTopFile(args.parameters, periodicBoxVectors=box_vectors)
-    else:
-        coords = AmberInpcrdFile(args.structure)
-        parm = AmberPrmtopFile(args.parameters)
-
-    if not os.path.isdir(f'{args.output}'):
-        os.mkdir(f'{args.output}')
-
-    # Minimize
-    min_file_name = 'minimized_system.pdb'
-    if not os.path.isfile(os.path.join(args.output,min_file_name)):
-        print("Minimizing...")
-        #min_pos = minimize(parm, coords.positions, args.output)
-        minimize(parm, coords.positions, args.output, min_file_name)
-    min_pdb = os.path.join(args.output,min_file_name)
-
-    # Equilibrate
-    eq_file_name = 'equil_system.pdb'
-    if not os.path.isfile(os.path.join(args.output,eq_file_name)):
-        print("Equilibrating...")
-        equilibrate(min_pdb, parm, args.output, eq_file_name)
-    eq_pdb = os.path.join(args.output,eq_file_name)
-    cent_eq_pdb = os.path.join(args.output,'centred_'+eq_file_name)
-    if os.path.isfile(eq_pdb) and not os.path.isfile(cent_eq_pdb):
-	# mdtraj can't use GMX TOP, so we have to specify the GRO file instead
-        if args.structure.endswith('.gro'):
-            mdtraj_top = args.structure
-        else:
-            mdtraj_top = args.parameters
-        mdu = md.load(eq_pdb, top=mdtraj_top)
-        mdu.image_molecules()
-        mdu.save_pdb(cent_eq_pdb)
-
-    # Run NREPS number of production simulations
-    for idx in range(0, args.nreps):
-        rep_dir = os.path.join(args.output,f'rep_{idx}')
-        if not os.path.isdir(rep_dir):
-            os.mkdir(rep_dir)
-
-        if os.path.isfile(os.path.join(rep_dir,'bpm_results.csv')):
-            continue
-        
-        produce(args.output, idx, args.lig_resname, eq_pdb, parm, args.parameters,
-                args.structure, args.hill_height)
-                
-        trj_name = os.path.join(rep_dir,'trj.dcd')
-                
-        PoseScoreArr = get_pose_score(cent_eq_pdb, trj_name, args.lig_resname)
-
-        ContactScoreArr = get_contact_score(cent_eq_pdb, trj_name, args.lig_resname)
-
-        # Calculate the CompScore at every frame
-        CompScoreArr = np.zeros(99)
-        for index in range(ContactScoreArr.shape[0]):
-            ContactScore, PoseScore = ContactScoreArr[index], PoseScoreArr[index]
-            CompScore = PoseScore - 5 * ContactScore
-            CompScoreArr[index] = CompScore
-
-        Scores = np.stack((CompScoreArr, PoseScoreArr, ContactScoreArr), axis=-1)
-
-        # Save a DataFrame to CSV
-        df = pd.DataFrame(Scores, columns=['CompScore', 'PoseScore',
-                                           'ContactScore'])
-        df.to_csv(os.path.join(rep_dir,'bpm_results.csv'), index=False)
-                
-    collect_results(args.output, args.output)
-
-    return None
     
 
 def get_contact_score(structure_file, trajectory_file, lig_resname):
@@ -182,12 +73,12 @@ def get_contact_score(structure_file, trajectory_file, lig_resname):
     cont_analysis.run()
     # print number of average contacts in the first ns
     # NOTE - hard coded number of frames (100 per traj)
-    frame_idx_first_ns = int(len(cont_analysis.timeseries)/10)
-    first_ns_mean = np.mean(cont_analysis.timeseries[1:frame_idx_first_ns, 1])
+    frame_idx_first_ns = int(len(cont_analysis.results.timeseries)/10)
+    first_ns_mean = np.mean(cont_analysis.results.timeseries[1:frame_idx_first_ns, 1])
     if first_ns_mean == 0:
-        normed_contacts = cont_analysis.timeseries[1:, 1]
+        normed_contacts = cont_analysis.results.timeseries[1:, 1]
     else:
-        normed_contacts = cont_analysis.timeseries[1:, 1]/first_ns_mean
+        normed_contacts = cont_analysis.results.timeseries[1:, 1]/first_ns_mean
     contact_scores = np.where(normed_contacts > 1, 1, normed_contacts)
 
     return contact_scores
@@ -220,12 +111,55 @@ def get_pose_score(structure_file, trajectory_file, lig_resname):
                  groupselections=[f'resname {lig_resname} and not name H*'],
                  ref_frame=0).run()
     # Get the PoseScores as np.array
-    pose_scores = r.rmsd[1:, -1]
+    pose_scores = r.results.rmsd[1:, -1]
 
     return pose_scores
 
 
-def minimize(parm, input_positions, out_dir, min_file_name):
+def add_harmonic_restraints(prmtop, inpcrd, system, atom_selection, k=1.0):
+    """Add harmonic restraints to the system.
+
+    Args:
+        prmtop (AmberPrmtopFile): Amber topology object
+        inpcrd (AmberInpcrdFile): Amber coordinates object
+        system (System): OpenMM system object created from the Amber topology object
+        atom_selection (str): Atom selection (see MDTraj documentation)
+        k (float): harmonic force restraints in kcal/mol/A**2 (default: 1 kcal/mol/A**2)
+
+    Returns:
+        (list, int): list of all the atom ids on which am harmonic force is applied, index with the System of the force that was added
+
+    """
+    mdtop = md.Topology.from_openmm(prmtop.topology)
+    atom_idxs = mdtop.select(atom_selection)
+    positions = inpcrd.positions
+
+    # Tranform constant to the right unit
+    k = k.value_in_unit_system(unit.md_unit_system)
+
+    if atom_idxs.size == 0:
+        print("Warning: no atoms selected using: %s" % atom_selection)
+        return ([], None)
+
+    # Take into accoun the periodic condition
+    # http://docs.openmm.org/latest/api-python/generated/simtk.openmm.openmm.CustomExternalForce.html
+    force = CustomExternalForce("k * periodicdistance(x, y, z, x0, y0, z0)^2")
+    
+    harmonic_force_idx = system.addForce(force)
+    
+    force.addGlobalParameter("k", k)
+    force.addPerParticleParameter("x0")
+    force.addPerParticleParameter("y0")
+    force.addPerParticleParameter("z0")
+    
+    for atom_idx in atom_idxs:
+        #print(atom_idx, positions[atom_idx].value_in_unit_system(units.md_unit_system))
+        force.addParticle(int(atom_idx), positions[atom_idx].value_in_unit_system(unit.md_unit_system))
+
+    return atom_idxs
+
+
+def minimisation(parm, coords, min_file_name):
     """An energy minimization function down with an energy tolerance
     of 10 kJ/mol.
 
@@ -235,46 +169,28 @@ def minimize(parm, input_positions, out_dir, min_file_name):
         Used to create the OpenMM System object.
     input_positions : OpenMM Quantity
         3D coordinates of the equilibrated system.
-    out_dir : str
-        Directory to write the outputs.
     min_file_name : str
         Name of the minimized PDB file to write.
     """
-    system = parm.createSystem(
-        nonbondedMethod=PME,
-        nonbondedCutoff=1*nanometers,
-        constraints=HBonds,
-    )
+    # Configuration system
+    system = parm.createSystem(nonbondedMethod=PME, nonbondedCutoff=12 * unit.angstrom, constraints=HBonds)
 
-    # Define platform properties
-    platform = Platform.getPlatformByName('CUDA')
-    properties = {'CudaPrecision': 'mixed'}
+    properties = {"Precision": "mixed"}
+    platform = Platform.getPlatformByName('OpenCL')
+    integrator = LangevinMiddleIntegrator(300 * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds)
+    simulation = Simulation(parm.topology, system, integrator, platform, properties)
+    simulation.context.setPositions(coords.positions)
 
-    # Set up the simulation parameters
-    # Langevin integrator at 300 K w/ 1 ps^-1 friction coefficient
-    # and a 2-fs timestep
-    # NOTE - no dynamics performed, but required for setting up
-    # the OpenMM system.
-    integrator = LangevinIntegrator(300*kelvin, 1/picosecond,
-                                    0.002*picoseconds)
-    simulation = Simulation(parm.topology, system, integrator, platform,
-                            properties)
-    simulation.context.setPositions(input_positions)
-
-    # Minimize the system - no predefined number of steps
+    print('Energy minimization')
     simulation.minimizeEnergy()
 
-    # Write out the minimized system to use w/ MDAnalysis
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    out_file = os.path.join(out_dir,min_file_name)
-    PDBFile.writeFile(simulation.topology, positions,
-                      open(out_file, 'w'))
-
-    return None
+    state = simulation.context.getState(getPositions=True, enforcePeriodicBox=True)
+    with open(min_file_name, 'w') as output:
+        output.write(XmlSerializer.serialize(state))
 
 
-def equilibrate(min_pdb, parm, out_dir, eq_file_name):
-    """A function that does a 500 ps NVT equilibration with position
+def equilibrate(parm, coords, min_file_name, eq_file_name, lig_resname):
+    """A function that does a 500 ps NPT equilibration with position
     restraints, with a 5 kcal/mol/A**2 harmonic constant on solute heavy
     atoms, using a 2 fs timestep.
 
@@ -289,77 +205,43 @@ def equilibrate(min_pdb, parm, out_dir, eq_file_name):
     eq_file_name : str
         Name of the equilibrated PDB file to write.
     """
-    # Get the solute heavy atom indices to use
-    # for defining position restraints during equilibration
-    universe = mda.Universe(min_pdb,
-                            format='XPDB', in_memory=True)
-    solute_heavy_atom_idx = universe.select_atoms('not resname WAT and\
-                                                   not resname SOL and\
-                                                   not resname HOH and\
-                                                   not resname CL and \
-                                                   not resname NA and \
-                                                   not name H*').indices
-    # Necessary conversion to int from numpy.int64,
-    # b/c it breaks OpenMM C++ function
-    solute_heavy_atom_idx = [int(idx) for idx in solute_heavy_atom_idx]
+    steps = 250000
+    restraint_value = 2.5 * unit.kilocalories_per_mole / unit.angstroms**2
 
-    # Add the restraints.
-    # We add a dummy atoms with no mass, which are therefore unaffected by
-    # any kind of scaling done by barostat (if used). And the atoms are
-    # harmonically restrained to the dummy atom. We have to redefine the
-    # system, b/c we're adding new particles and this would clash with
-    # modeller.topology.
-    system = parm.createSystem(
-        nonbondedMethod=PME,
-        nonbondedCutoff=1*nanometers,
-        constraints=HBonds,
-    )
-    # Add the harmonic restraints on the positions
-    # of specified atoms
-    restraint = HarmonicBondForce()
-    restraint.setUsesPeriodicBoundaryConditions(True)
-    system.addForce(restraint)
-    nonbonded = [force for force in system.getForces()
-                 if isinstance(force, NonbondedForce)][0]
-    dummyIndex = []
-    input_positions = PDBFile(min_pdb).getPositions()
-    positions = input_positions
-    # Go through the indices of all atoms that will be restrained
-    for i in solute_heavy_atom_idx:
-        j = system.addParticle(0)
-        # ... and add a dummy/ghost atom next to it
-        nonbonded.addParticle(0, 1, 0)
-        # ... that won't interact with the restrained atom 
-        nonbonded.addException(i, j, 0, 1, 0)
-        # ... but will be have a harmonic restraint ('bond')
-        # between the two atoms
-        restraint.addBond(i, j, 0*nanometers,
-                          5*kilocalories_per_mole/angstrom**2)
-        dummyIndex.append(j)
-        input_positions.append(positions[i])
+    # Configuration system
+    system = parm.createSystem(nonbondedMethod=PME, nonbondedCutoff=12 * unit.angstrom, constraints=HBonds)
 
-    integrator = LangevinIntegrator(300*kelvin, 1/picosecond,
-                                    0.002*picoseconds)
-    platform = Platform.getPlatformByName('CUDA')
-    properties = {'CudaPrecision': 'mixed'}
-    sim = Simulation(parm.topology, system, integrator,
-                     platform, properties)
-    sim.context.setPositions(input_positions)
-    integrator.step(250000)  # run 500 ps of equilibration
-    all_positions = sim.context.getState(
-        getPositions=True, enforcePeriodicBox=True).getPositions()
-    # we don't want to write the dummy atoms, so we only
-    # write the positions of atoms up to the first dummy atom index
-    relevant_positions = all_positions[:dummyIndex[0]]
-    out_file = os.path.join(out_dir,eq_file_name)
-    PDBFile.writeFile(sim.topology, relevant_positions,
-                      open(out_file, 'w'))
+    atom_idxs = add_harmonic_restraints(parm, coords, system, "(protein or resname %s) and not element H" % lig_resname, restraint_value)
+    print('Number of particles constrainted: %d' % len(atom_idxs))
 
-    return None
+    print('Create simulation system')
+    properties = {"Precision": "mixed"}
+    platform = Platform.getPlatformByName('OpenCL')
+    system.addForce(MonteCarloBarostat(1 * unit.bar, 300 * unit.kelvin))
+    integrator = LangevinMiddleIntegrator(300 * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds)
+    simulation = Simulation(parm.topology, system, integrator, platform, properties)
+    simulation.context.setPositions(coords.positions)
+
+    simulation.loadState(min_file_name)
+
+    print('Equilibration with constraint value of %s' % restraint_value)
+    # MD simulations - production
+    simulation.reporters.append(DCDReporter('equil.dcd', 500)) # 1 ps
+    simulation.reporters.append(CheckpointReporter('equil.chk', 50000)) # 100 ps
+    simulation.reporters.append(StateDataReporter('equil.log', 500, 
+                                step=True, temperature=True, progress=True, time=True, 
+                                potentialEnergy=True, kineticEnergy=True, totalEnergy=True, 
+                                remainingTime=True, speed=True, volume=True, density=True,
+                                totalSteps=steps, separator=',')) # 1 ps
+
+    simulation.step(steps) # 500 ps
+
+    state = simulation.context.getState(getPositions=True, getVelocities=True, enforcePeriodicBox=True)
+    with open(eq_file_name, 'w') as output:
+        output.write(XmlSerializer.serialize(state))
 
 
-def produce(out_dir, idx, lig_resname, eq_pdb, parm, parm_file,
-            coords_file, set_hill_height):
+def produce(parm, coords, lig_resname, anchor_residues=None, set_hill_height=0.3, rep_dir='.', eq_file_name='equil.xml'):
     """An OpenBPMD production simulation function. Ligand RMSD is biased with
     metadynamics. The integrator uses a 4 fs time step and
     runs for 10 ns, writing a frame every 100 ps.
@@ -389,45 +271,53 @@ def produce(out_dir, idx, lig_resname, eq_pdb, parm, parm_file,
         Metadynamic hill height, in kcal/mol.
 
     """
-    # First, assign the replica directory to which we'll write the files
-    write_dir = os.path.join(out_dir,f'rep_{idx}')
-    # Get the anchor atoms by ...
-    universe = mda.Universe(eq_pdb,
-                            format='XPDB', in_memory=True)
-    # ... finding the protein's COM ...
-    prot_com = universe.select_atoms('protein').center_of_mass()
-    x, y, z = prot_com[0], prot_com[1], prot_com[2]
-    # ... and taking the heavy backbone atoms within 5A of the COM
-    sel_str = f'point {x} {y} {z} 5 and backbone and not name H*'
-    anchor_atoms = universe.select_atoms(sel_str)
-    # ... or 10 angstrom
-    if len(anchor_atoms) == 0:
-        sel_str = f'point {x} {y} {z} 10 and backbone and not name H*'
-        anchor_atoms = universe.select_atoms(sel_str)
+    sim_time = 10  # ns
+    steps = 250000 * sim_time
+    trj_name = os.path.join(rep_dir, 'trj.dcd')
+    log_file = os.path.join(rep_dir, 'sim_log.csv')
+    colvar_file = os.path.join(rep_dir, 'COLVAR.npy')
 
-    anchor_atom_idx = anchor_atoms.indices.tolist()
+    # Load top and coor in parmed, then in MDAnalysis
+    # We can re-use the initial system, because we just want the
+    # indices of the protein atoms, and not their coordinates.
+    pmd_system = pmd.openmm.load_topology(parm.topology, xyz=coords.positions)
+    u = mda.Universe(pmd_system)
 
-    # Get indices of ligand heavy atoms
-    lig = universe.select_atoms(f'resname {lig_resname} and not name H*')
+    if anchor_residues is None:
+        # Get protein anchor points
+        prot_com = u.select_atoms('protein and not name H*').center_of_mass()
+        x, y, z = prot_com[0], prot_com[1], prot_com[2]
 
+        # Look for protein anchor residues at different radius
+        for dist in [5, 10]:
+            prot_anchor_atoms = u.select_atoms(f'point {x} {y} {z} {dist} and backbone and not name H*')
+            
+            if len(prot_anchor_atoms.residues) > 1:
+                break
+    else:
+        sel_str = 'backbone and (%s)' % (' or '.join(['resid %s' % resid for resid in anchor_residues]))
+        prot_anchor_atoms = u.select_atoms(sel_str)
+
+    anchor_atom_idx = prot_anchor_atoms.indices.tolist()
+
+    print('Selected residues as protein anchor: %s' % prot_anchor_atoms.residues)
+
+    # Check if we found protein anchors, otherwise we abort.
+    # Likely an issue with the periodic conditions
+    assert len(anchor_atom_idx) > 0, 'Error: No residues was selected as anchor points.'
+
+    # Get the indices of ligand heavy atoms
+    lig = u.select_atoms('resname %s and not element H' % lig_resname)
     lig_ha_idx = lig.indices.tolist()
 
     # Set up the system to run metadynamics
-    system = parm.createSystem(
-        nonbondedMethod=PME,
-        nonbondedCutoff=1*nanometers,
-        constraints=HBonds,
-        hydrogenMass=4*amu
-    )
-    # get the atom positions for the system from the equilibrated
-    # system
-    input_positions = PDBFile(eq_pdb).getPositions()
+    system = parm.createSystem(nonbondedMethod=PME, nonbondedCutoff=12 * unit.angstrom, constraints=HBonds, hydrogenMass=4 * unit.amu)
 
     # Add an 'empty' flat-bottom restraint to fix the issue with PBC.
     # Without one, RMSDForce object fails to account for PBC.
-    k = 0*kilojoules_per_mole  # NOTE - 0 kJ/mol constant
-    upper_wall = 10.00*nanometer
-    fb_eq = '(k/2)*max(distance(g1,g2) - upper_wall, 0)^2'
+    k = 0 * unit.kilojoules_per_mole  # NOTE - 0 kJ/mol constant
+    upper_wall = 10.00 * unit.nanometer
+    fb_eq = '(k/2) * max(distance(g1, g2) - upper_wall, 0)^2'
     upper_wall_rest = CustomCentroidBondForce(2, fb_eq)
     upper_wall_rest.addGroup(lig_ha_idx)
     upper_wall_rest.addGroup(anchor_atom_idx)
@@ -437,74 +327,57 @@ def produce(out_dir, idx, lig_resname, eq_pdb, parm, parm_file,
     upper_wall_rest.setUsesPeriodicBoundaryConditions(True)
     system.addForce(upper_wall_rest)
 
-    alignment_indices = lig_ha_idx + anchor_atom_idx
-
-    rmsd = RMSDForce(input_positions, alignment_indices)
     # Set up the typical metadynamics parameters
+    alignment_indices = lig_ha_idx + anchor_atom_idx
+    rmsd = RMSDForce(coords.positions, alignment_indices)
+
     grid_min, grid_max = 0.0, 1.0  # nm
-    hill_height = set_hill_height*kilocalories_per_mole
+    hill_height = set_hill_height * unit.kilocalories_per_mole
     hill_width = 0.002  # nm, also known as sigma
 
     grid_width = hill_width / 5
     # 'grid' here refers to the number of grid points
     grid = int(abs(grid_min - grid_max) / grid_width)
 
-    rmsd_cv = BiasVariable(rmsd, grid_min, grid_max, hill_width,
-                           False, gridWidth=grid)
+    rmsd_cv = BiasVariable(rmsd, grid_min, grid_max, hill_width, False, gridWidth=grid)
 
     # define the metadynamics object
     # deposit bias every 1 ps, BF = 4, write bias every ns
-    meta = Metadynamics(system, [rmsd_cv], 300.0*kelvin, 4.0, hill_height,
-                        250, biasDir=write_dir,
-                        saveFrequency=250000)
+    meta = Metadynamics(system, [rmsd_cv], 300.0 * unit.kelvin, 4.0, hill_height, 250, biasDir=rep_dir, saveFrequency=250000)
 
     # Set up and run metadynamics
-    integrator = LangevinIntegrator(300*kelvin, 1.0/picosecond,
-                                    0.004*picoseconds)
-    platform = Platform.getPlatformByName('CUDA')
-    properties = {'CudaPrecision': 'mixed'}
+    properties = {"Precision": "mixed"}
+    platform = Platform.getPlatformByName('OpenCL')
+    integrator = LangevinIntegrator(300 * unit.kelvin, 1.0 / unit.picosecond, 0.004 * unit.picoseconds)
+    simulation = Simulation(parm.topology, system, integrator, platform, properties)
+    simulation.context.setPositions(coords.positions)
 
-    simulation = Simulation(parm.topology, system, integrator, platform,
-                            properties)
-    simulation.context.setPositions(input_positions)
-
-    trj_name = os.path.join(write_dir,'trj.dcd')
-
-    sim_time = 10  # ns
-    steps = 250000 * sim_time
+    simulation.loadState(eq_file_name)
 
     simulation.reporters.append(DCDReporter(trj_name, 25000))  # every 100 ps
-    simulation.reporters.append(StateDataReporter(
-                                os.path.join(write_dir,'sim_log.csv'), 250000,
-                                step=True, temperature=True, progress=True,
-                                remainingTime=True, speed=True,
-                                totalSteps=steps, separator=','))  # every 1 ns
+    simulation.reporters.append(StateDataReporter(log_file, 25000,
+                                step=True, temperature=True, progress=True, time=True, 
+                                potentialEnergy=True, kineticEnergy=True, totalEnergy=True, 
+                                remainingTime=True, speed=True, volume=True, density=True,
+                                totalSteps=steps, separator=','))  # every 100 ps
 
     colvar_array = np.array([meta.getCollectiveVariables(simulation)])
+
     for i in range(0, int(steps), 500):
         if i % 25000 == 0:
             # log the stored COLVAR every 100ps
-            np.save(os.path.join(write_dir,'COLVAR.npy'), colvar_array)
+            np.save(colvar_file, colvar_array)
+
         meta.step(simulation, 500)
-        current_cvs = meta.getCollectiveVariables(simulation)
+
         # record the CVs every 2 ps
+        current_cvs = meta.getCollectiveVariables(simulation)
         colvar_array = np.append(colvar_array, [current_cvs], axis=0)
-    np.save(os.path.join(write_dir,'COLVAR.npy'), colvar_array)
-
-    # center everything using MDTraj, to fix any PBC imaging issues
-    # mdtraj can't use GMX TOP, so we have to specify the GRO file instead
-    if coords_file.endswith('.gro'):
-        mdtraj_top = coords_file
-    else:
-        mdtraj_top = parm_file
-    mdu = md.load(trj_name, top=mdtraj_top)
-    mdu.image_molecules()
-    mdu.save(trj_name)
-
-    return None
+    
+    np.save(colvar_file, colvar_array)
 
 
-def collect_results(in_dir, out_dir):
+def collect_results(nreps, in_dir, out_dir):
     """A function that collects the time-resolved BPM results,
     takes the scores from last 2 ns of the simulation, averages them
     and writes that average as the final score for a given pose.
@@ -518,41 +391,39 @@ def collect_results(in_dir, out_dir):
     out_dir : str
         Directory where the 'results.csv' file will be written
     """
-    compList = []
-    contactList = []
-    poseList = []
-    # find how many repeats have been run
-    glob_str = os.path.join(in_dir,'rep_*')
-    nreps = len(glob.glob(glob_str))
+    comp = []
+    contact = []
+    pose = []
+
     for idx in range(0, nreps):
-        f = os.path.join(in_dir,f'rep_{idx}','bpm_results.csv')
+        f = os.path.join(in_dir, f'rep_{idx}', 'bpm_results.csv')
         df = pd.read_csv(f)
         # Since we only want last 2 ns, get the index of
         # the last 20% of the data points
-        last_2ns_idx = round(len(df['CompScore'].values)/5)  # round up
-        compList.append(df['CompScore'].values[-last_2ns_idx:])
-        contactList.append(df['ContactScore'].values[-last_2ns_idx:])
-        poseList.append(df['PoseScore'].values[-last_2ns_idx:])
+        last_2ns_idx = round(len(df['comp_score'].values) / 5)  # round up
+        comp.append(df['comp_score'].values[-last_2ns_idx:])
+        contact.append(df['contact_score'].values[-last_2ns_idx:])
+        pose.append(df['pose_score'].values[-last_2ns_idx:])
 
     # Get the means of the last 2 ns
-    meanCompScore = np.mean(compList)
-    meanPoseScore = np.mean(poseList)
-    meanContact = np.mean(contactList)
+    mean_comp_score = np.mean(comp)
+    mean_pose_score = np.mean(pose)
+    mean_contact_score = np.mean(contact)
     # Get the standard deviation of the final 2 ns
-    meanCompScore_std = np.std(compList)
-    meanPoseScore_std = np.std(poseList)
-    meanContact_std = np.std(contactList)
+    mean_comp_score_std = np.std(comp)
+    mean_pose_score_std = np.std(pose)
+    mean_contact_score_std = np.std(contact)
     # Format it the Pandas way
-    d = {'CompScore': [meanCompScore], 'CompScoreSD': [meanCompScore_std],
-         'PoseScore': [meanPoseScore], 'PoseScoreSD': [meanPoseScore_std],
-         'ContactScore': [meanContact], 'ContactScoreSD': [meanContact_std]}
+    d = {'comp_score': [mean_comp_score], 'comp_score_std': [mean_comp_score_std],
+         'pose_score': [mean_pose_score], 'pose_score_std': [mean_pose_score_std],
+         'contact_score': [mean_contact_score], 'contact_score_std': [mean_contact_score_std]}
 
     results_df = pd.DataFrame(data=d)
     results_df = results_df.round(3)
-    results_df.to_csv(os.path.join(out_dir,'results.csv'), index=False)
+    results_df.to_csv(os.path.join(out_dir, 'results.csv'), index=False)
 
 
-if __name__ == "__main__":
+def cmd_lineparser():
     """ This is executed when run from the command line """
     # Parse the CLI arguments
     parser = argparse.ArgumentParser(
@@ -567,10 +438,112 @@ if __name__ == "__main__":
                         help='output location (default: %(default)s)')
     parser.add_argument("-lig_resname", type=str, default='MOL',
                         help='the name of the ligand (default: %(default)s)')
+    parser.add_argument("-anchor_residues", nargs='+', type=int, default=None,
+                        help='anchor residues (default: %(default)s)')
     parser.add_argument("-nreps", type=int, default=10,
                         help="number of OpenBPMD repeats (default: %(default)i)")
     parser.add_argument("-hill_height", type=float, default=0.3,
                         help="the hill height in kcal/mol (default: %(default)f)")
 
-    args = parser.parse_args()
-    main(args)
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point of the app. Takes in argparse.Namespace object as
+    a function argument. Carries out a sequence of steps required to obtain a
+    stability score for a given ligand pose in the provided structure file.
+
+    1. Load the structure and parameter files.
+    2. If absent, create an output folder.
+    3. Minimization up to ener. tolerance of 10 kJ/mol.
+    4. 500 ps equilibration in NVT ensemble with position
+       restraints on solute heavy atoms with the force 
+       constant of 5 kcal/mol/A^2
+    5. Run NREPs (default=10) of binding pose metadynamics simulations,
+       writing trajectory files and a time-resolved BPM scores for each
+       repeat.
+    6. Collect results from the OpenBPMD simulations and
+       write a final score for a given protein-ligand
+       structure.
+
+    Parameters
+    ----------
+    args.structure : str, default='solvated.rst7'
+        Name of the structure file, either Amber or Gromacs format.
+    args.parameters : str, default='solvated.prm7'
+        Name of the parameter or topology file, either Amber or Gromacs
+        format.
+    args.output : str, default='.'
+        Path to and the name of the output directory.
+    args.lig_resname : str, default='LIG'
+        Residue name of the ligand in the structure/parameter file.
+    args.nreps : int, default=10
+        Number of repeat OpenBPMD simulations to run in series.
+    args.hill_height : float, default=0.3
+        Size of the metadynamical hill, in kcal/mol.
+    """
+    args = cmd_lineparser()
+
+    if args.structure.endswith('.gro'):
+        coords = GromacsGroFile(args.structure)
+        box_vectors = coords.getPeriodicBoxVectors()
+        parm = GromacsTopFile(args.parameters, periodicBoxVectors=box_vectors)
+    else:
+        coords = AmberInpcrdFile(args.structure)
+        parm = AmberPrmtopFile(args.parameters)
+
+    if not os.path.isdir(f'{args.output}'):
+        os.mkdir(f'{args.output}')
+
+    # Minimize
+    min_file_name = os.path.join(args.output, 'min.xml')
+    if not os.path.isfile(min_file_name):
+        minimisation(parm, coords, min_file_name)
+
+    # ..and Equilibrate
+    eq_file_name = os.path.join(args.output, 'equil.xml')
+    if not os.path.isfile(eq_file_name):
+        equilibrate(parm, coords, min_file_name, eq_file_name, args.lig_resname)
+
+    # Run NREPS number of production simulations
+    for idx in range(0, args.nreps):
+        print("Producing... (run: %02d/%02d)" % (idx + 1, args.nreps))
+
+        rep_dir = os.path.join(args.output, f'rep_{idx}')
+        if not os.path.isdir(rep_dir):
+            os.mkdir(rep_dir)
+
+        trj_name = os.path.join(rep_dir, 'trj.dcd')
+
+        if os.path.isfile(os.path.join(rep_dir, 'bpm_results.csv')):
+            continue
+        
+        produce(parm, coords, args.lig_resname, args.anchor_residues, args.hill_height, rep_dir, eq_file_name)
+
+        # center everything using MDTraj, to fix any PBC imaging issues
+        # mdtraj can't use GMX TOP, so we have to specify the GRO file instead
+        if args.structure.endswith('.gro'):
+            mdtraj_top = args.structure
+        else:
+            mdtraj_top = args.parameters
+
+        mdu = md.load(trj_name, top=mdtraj_top)
+        mdu.image_molecules()
+        mdu.save(trj_name)
+                
+        pose_scores = get_pose_score(args.parameters, trj_name, args.lig_resname)
+        contact_scores = get_contact_score(args.parameters, trj_name, args.lig_resname)
+
+        # Calculate the CompScore at every frame
+        comp_scores = pose_scores - 5 * contact_scores
+        scores = np.stack((comp_scores, pose_scores, contact_scores), axis=-1)
+
+        # Save a DataFrame to CSV
+        df = pd.DataFrame(data=scores, columns=['comp_score', 'pose_score', 'contact_score'])
+        df.to_csv(os.path.join(rep_dir, 'bpm_results.csv'), index=False)
+                
+    collect_results(args.nreps, args.output, args.output)
+
+
+if __name__ == '__main__':
+    main()
