@@ -8,13 +8,9 @@ OpenBPMD is an open source implementation of binding pose metadynamics (BPMD). B
 The dependencies needed for running the scripts can be installed with conda:
 
 ```
-conda create -n openbpmd
-conda activate openbpmd
+mamba create -n openbpmd -c conda-forge openmm mdanalysis mdtraj parmed
+mamba activate openbpmd
 
-conda install -c conda-forge -c omnia openmm=7.4.2
-conda install -c conda-forge mdanalysis
-conda install -c conda-forge mdtraj
-conda install -c conda-forge parmed
 ```
 
 Once the dependencies have been installed, running OpenBPMD involves simply running one of the Python scripts. Have a look at the ```examples/``` directory for further instructions on how to run and analyse the OpenBPMD results.
